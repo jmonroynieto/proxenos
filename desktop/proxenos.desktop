@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Proxenos
+Comment=Toggle and inspect local self-hosted services
+Exec=proxenos
+Icon=proxenos
+Terminal=false
+Categories=System;Monitor;GTK;
+Keywords=services;localhost;self-hosting;ollama;
+StartupNotify=true
+StartupWMClass=proxenos

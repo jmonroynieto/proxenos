@@ -1,0 +1,69 @@
+# Copy to ~/.config/proxenos/services.conf.  Values support \n escapes when a
+# command needs multiple lines.  The command is parsed as an argv command, not
+# implicitly passed to a shell.
+
+# Readiness
+#
+#   ready=port     Proxenos watches for something listening on `port`, by
+#                  reading the kernel's socket table.  The service is sent
+#                  nothing, so this check writes no line to its access log and
+#                  costs it nothing at all.  This is the default whenever a
+#                  port is declared, so most services need no `ready` line.
+#
+#   ready=command  ready_command is run, and exit status zero means ready.
+#                  Use this when a service can be listening and still unable to
+#                  serve — a web application whose database is down answers the
+#                  port check and fails every real request.  The command runs
+#                  during `proxenos-cli up --wait`, and once more when a service
+#                  first starts listening; never on a timer.
+#
+#   ready=none     Only the process is watched.  Use it for a service with no
+#                  port, or one whose port belongs to something else.
+
+[ollama]
+backend=direct
+# Replace every path in this file with your own before using it.
+command=nix develop /path/to/ollama-flake --command ollama serve
+working_directory=/path/to/ollama-flake
+environment=OLLAMA_VULKAN=1;OLLAMA_INTEL_GPU=1;
+port=11434
+hostname=ollama.proxenos
+stop_signal=TERM
+stop_timeout_seconds=10
+# Ollama binds 11434 only once its server is up, and it has no warm-up after
+# that: models load on the first request that needs one.  The free port check
+# is therefore a true readiness signal, and nothing more is worth paying for.
+# If you did want a probe, /api/version answers in 20 bytes; /api/tags reads
+# the model directory and a generate call loads a model, so neither belongs in
+# a check.
+ready=port
+ready_timeout_seconds=30
+# No native log file is declared: stdout and stderr are captured by Proxenos.
+
+# Forgejo retains its normal listener on port 3000. `hostname` becomes active
+# when the local resolver and HTTP reverse-proxy adapters are added.
+[forgejo]
+backend=direct
+command=forgejo web --work-path /srv/forgejo/data
+working_directory=/srv/forgejo
+port=3000
+hostname=forgejo.proxenos
+stop_signal=TERM
+stop_timeout_seconds=30
+# Forgejo's port opens at the end of its startup, so the free check already
+# tells you routing is live.  Its database is the part the port cannot see: a
+# Forgejo listening on a broken database answers every port check and fails
+# every request.  /api/healthz pings the cache and the database and says which
+# passed, in 285 bytes and under a millisecond — the one case here where a
+# command check buys something the free check cannot see.
+ready=command
+ready_command=curl -fsS -m 2 -o /dev/null http://127.0.0.1:3000/api/healthz
+ready_timeout_seconds=60
+logs=/srv/forgejo/data/log;
+
+# A service with no port of its own: there is nothing to listen for, so
+# Proxenos watches the process and says no more than it knows.
+#[backup-sync]
+#backend=direct
+#command=/usr/local/bin/backup-sync --watch
+#ready=none

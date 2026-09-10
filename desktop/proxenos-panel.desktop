@@ -1,0 +1,9 @@
+[Xfce Panel]
+Type=X-XFCE-PanelPlugin
+Name=Proxenos
+Comment=Toggle local self-hosted services
+Icon=proxenos
+X-XFCE-Module=proxenos-panel
+X-XFCE-Internal=false
+X-XFCE-Unique=true
+X-XFCE-API=2.0

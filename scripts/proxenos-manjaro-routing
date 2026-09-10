@@ -1,0 +1,17 @@
+#!/bin/sh
+# Configure NetworkManager and systemd-resolved for *.proxenos, then run Proxenos Router.
+set -eu
+
+config_path=${1:-"${XDG_CONFIG_HOME:-$HOME/.config}/proxenos/services.conf"}
+
+if ! router_path=$(command -v proxenos-router); then
+  echo "proxenos-router is not on PATH; install Proxenos first" >&2
+  exit 1
+fi
+
+if [ ! -r "$config_path" ]; then
+  echo "Proxenos configuration not found: $config_path" >&2
+  exit 1
+fi
+
+exec sudo "$router_path" --setup-manjaro --config "$config_path"

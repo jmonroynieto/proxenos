@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">Proxenos</title>
+  <desc id="description">A gold hand opens a dark threshold within a gold civic seal.</desc>
+  <rect width="256" height="256" rx="56" fill="#201f1b"/>
+  <!-- A quiet civic seal: the hand is the host, the dark arch is the place made available. -->
+  <path fill="#D6BA7C" d="M128 30a98 98 0 1 0 0 196 98 98 0 0 0 0-196Zm0 14a84 84 0 1 1 0 168 84 84 0 0 1 0-168Z"/>
+  <path fill="#D6BA7C" d="M75 184c-13 0-23-10-23-23v-37c0-7 5-12 12-12s12 5 12 12v13h7V83c0-7 5-12 12-12s12 5 12 12v45h7V65c0-7 5-12 12-12s12 5 12 12v63h7V77c0-7 5-12 12-12s12 5 12 12v51h7v-34c0-7 5-12 12-12s12 5 12 12v52c0 21-17 38-38 38H75Z"/>
+  <!-- Negative hand-shaped space, simplified enough to hold its form at 16 px. -->
+  <path fill="#201f1b" d="M120 171c-11 0-20-9-20-20v-19c0-4 3-7 7-7s7 3 7 7v13h5V98c0-4 3-7 7-7s7 3 7 7v40h5V83c0-4 3-7 7-7s7 3 7 7v55h5v-40c0-4 3-7 7-7s7 3 7 7v40h5v-24c0-4 3-7 7-7s7 3 7 7v31c0 14-11 26-26 26h-40Z"/>
+  <path fill="#D6BA7C" d="M121 193h14v14h-14z"/>
+</svg>

@@ -1,0 +1,5 @@
+# Build outputs
+/build/
+
+# Local runtime diagnostics, if one is ever written beside the source
+/proxenos-debug.log

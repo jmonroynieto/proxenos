@@ -1,0 +1,35 @@
+# Maintainer: Juan Monroy-Nieto <jmonroynieto@outlook.com>
+pkgname=proxenos
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Per-user facilitator for local self-hosted services, with an XFCE panel plugin'
+arch=('x86_64')
+url='https://github.com/jmonroynieto/proxenos'
+license=('MIT')
+depends=('glib2' 'gtk3' 'xfce4-panel')
+makedepends=('git' 'pkgconf')
+optdepends=(
+  'polkit-gnome: authentication agent for the local-names router'
+  'curl: for the ready_command examples in services.conf.example'
+)
+backup=()
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  make VERSION="$pkgver"
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  make check
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make VERSION="$pkgver" PREFIX=/usr DESTDIR="$pkgdir" install
+
+  install -Dm644 packaging/org.proxenos.router.policy \
+    "$pkgdir/usr/share/polkit-1/actions/org.proxenos.router.policy"
+}
