@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256"
+     role="img" aria-labelledby="title description" fill="#bebebe">
+  <title id="title">Proxenos</title>
+  <desc id="description">A civic seal ringing a hand that opens a threshold, drawn in one tone.</desc>
+  <!-- The placeholder grey above is the symbolic convention: GTK replaces every
+       fill with the foreground color of the widget the icon is drawn in, so the
+       only thing this file decides is the shape. -->
+
+  <!-- The seal is a ring because the inner circle is wound the other way. -->
+  <path d="M128 30a98 98 0 1 0 0 196 98 98 0 0 0 0-196Zm0 14a84 84 0 1 1 0 168 84 84 0 0 1 0-168Z"/>
+
+  <!-- Hand and threshold are one path: a symbolic icon has a single color, so
+       the opening has to be a hole in the hand rather than a darker shape laid
+       over it, and even-odd is what turns the inner outline into that hole. -->
+  <path fill-rule="evenodd" d="M75 184c-13 0-23-10-23-23v-37c0-7 5-12 12-12s12 5 12 12v13h7V83c0-7 5-12 12-12s12 5 12 12v45h7V65c0-7 5-12 12-12s12 5 12 12v63h7V77c0-7 5-12 12-12s12 5 12 12v51h7v-34c0-7 5-12 12-12s12 5 12 12v52c0 21-17 38-38 38H75ZM120 171c-11 0-20-9-20-20v-19c0-4 3-7 7-7s7 3 7 7v13h5V98c0-4 3-7 7-7s7 3 7 7v40h5V83c0-4 3-7 7-7s7 3 7 7v55h5v-40c0-4 3-7 7-7s7 3 7 7v40h5v-24c0-4 3-7 7-7s7 3 7 7v31c0 14-11 26-26 26h-40Z"/>
+
+  <path d="M121 193h14v14h-14z"/>
+</svg>

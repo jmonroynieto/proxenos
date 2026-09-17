@@ -12,6 +12,25 @@
 /* PROXENOS_CONFIG overrides the location of services.conf. */
 gchar *proxenos_config_path(void);
 
+/* The last `lines` lines of a file.  Reading starts at most `max_bytes` before
+   the end, so a log that has grown large costs the same as a small one; when
+   the cap lands mid-line that first partial line is dropped rather than shown
+   as though it were a whole one.  Returns an empty string for an empty file,
+   and NULL with `error` set when the file cannot be read. */
+gchar *proxenos_tail_file(const gchar *path, guint lines, gsize max_bytes, GError **error);
+
+/* Rewrites the config so its group blocks appear in the order named, moving
+   each block's text unchanged rather than rebuilding it from parsed keys: the
+   file is hand-written, and a GKeyFile round trip would drop its comments and
+   spacing.  A block is its [name] line, the lines below it, and any comment
+   lines written directly above it with no blank line in between, which is
+   where a comment about a service is normally put.  Anything above the first
+   group stays at the top, and groups the caller does not name keep their
+   relative order after the ones it does.  Writing is skipped when the order
+   already matches. */
+gboolean proxenos_config_reorder(const gchar *path, const gchar *const *order,
+                                 gsize count, GError **error);
+
 /* $XDG_STATE_HOME/proxenos/<service>.<suffix>, creating the directory. */
 gchar *proxenos_state_path(const gchar *service, const gchar *suffix);
 

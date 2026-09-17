@@ -41,7 +41,7 @@ PANEL_LIBS := $(shell pkg-config --libs libxfce4panel-2.0)
 
 PROGRAMS := $(BUILD_DIR)/proxenos $(BUILD_DIR)/proxenos-cli $(BUILD_DIR)/proxenos-router $(BUILD_DIR)/proxenos-panel.so
 
-.PHONY: all clean check install install-config uninstall
+.PHONY: all clean check install install-config update-icon-cache uninstall
 
 all: $(PROGRAMS)
 
@@ -97,8 +97,32 @@ install: all install-config
 	install -Dm644 desktop/proxenos.desktop $(DESTDIR)$(DATADIR)/applications/proxenos.desktop
 	install -Dm644 desktop/proxenos-panel.desktop $(DESTDIR)$(DATADIR)/xfce4/panel/plugins/proxenos-panel.desktop
 	install -Dm644 assets/proxenos.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/proxenos.svg
+	install -Dm644 assets/icons/hicolor/scalable/apps/proxenos-symbolic.svg $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/proxenos-symbolic.svg
 	install -Dm644 $(CONFIG_EXAMPLE) $(DESTDIR)$(DATADIR)/proxenos/services.conf.example
 	install -Dm644 LICENSE $(DESTDIR)$(DATADIR)/licenses/proxenos/LICENSE
+	@$(MAKE) --no-print-directory update-icon-cache
+
+# GTK reads an installed icon through $(DATADIR)/icons/hicolor/icon-theme.cache
+# when that file is at least as new as the theme root, and installing a new
+# icon touches only the scalable/apps subdirectory.  An icon added next to a
+# cache written earlier is therefore invisible: the program looks it up, GTK
+# says no, and the program quietly uses whatever fallback it has.  Rebuilding
+# the cache is the fix; where the tool is missing, making the root newer than
+# the cache is enough, because GTK then ignores the cache and reads the
+# directories.  A packaging build does neither, since the package manager runs
+# its own hook after the files are in place.
+update-icon-cache:
+ifeq ($(DESTDIR),)
+	@if command -v gtk-update-icon-cache >/dev/null 2>&1; then \
+		gtk-update-icon-cache -q -t -f "$(DATADIR)/icons/hicolor" && \
+		echo "refreshed $(DATADIR)/icons/hicolor/icon-theme.cache"; \
+	else \
+		touch "$(DATADIR)/icons/hicolor"; \
+		echo "gtk-update-icon-cache not found: touched $(DATADIR)/icons/hicolor instead"; \
+	fi
+else
+	@echo "packaging build: icon cache left to the package manager"
+endif
 
 # Seeds the live configuration once, and never overwrites it.  A package build
 # sets DESTDIR and must not write into anyone's home directory, so this step
@@ -126,6 +150,7 @@ uninstall:
 	rm -f $(DESTDIR)$(DATADIR)/applications/proxenos.desktop
 	rm -f $(DESTDIR)$(DATADIR)/xfce4/panel/plugins/proxenos-panel.desktop
 	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/proxenos.svg
+	rm -f $(DESTDIR)$(DATADIR)/icons/hicolor/scalable/apps/proxenos-symbolic.svg
 	rm -f $(DESTDIR)$(DATADIR)/proxenos/services.conf.example
 	rm -f $(DESTDIR)$(DATADIR)/licenses/proxenos/LICENSE
 

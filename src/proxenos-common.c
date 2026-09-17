@@ -452,3 +452,248 @@ void proxenos_debug_log(const gchar *format, ...) {
   fputc('\n', file);
   fclose(file);
 }
+
+/* ---- config group order -------------------------------------------------
+
+   Reordering is a text move, not a rewrite.  Every byte of a block travels
+   with it, so a comment explaining why a service exists stays attached to that
+   service, and the parts of the file nobody reordered come back identical. */
+
+typedef struct {
+  gchar *name;
+  gchar *text;   /* the block's lines joined by newlines, with none at the end */
+} ConfigBlock;
+
+/* A group header is "[name]" alone on its line.  Whitespace around it is
+   allowed because people indent; anything else on the line means the line is
+   something other than a header. */
+static gchar *config_group_header_name(const gchar *line) {
+  while (*line == ' ' || *line == '\t')
+    line++;
+  if (*line != '[')
+    return NULL;
+
+  const gchar *close = strrchr(line, ']');
+  if (!close || close == line + 1)
+    return NULL;
+  for (const gchar *rest = close + 1; *rest; rest++)
+    if (*rest != ' ' && *rest != '\t' && *rest != '\r')
+      return NULL;
+
+  return g_strndup(line + 1, (gsize)(close - line - 1));
+}
+
+static gboolean config_line_is_comment(const gchar *line) {
+  while (*line == ' ' || *line == '\t')
+    line++;
+  return *line == '#' || *line == ';';
+}
+
+static gchar *config_join_lines(gchar **lines, guint from, guint to) {
+  GString *text = g_string_new(NULL);
+  for (guint i = from; i < to; i++) {
+    if (i > from)
+      g_string_append_c(text, '\n');
+    g_string_append(text, lines[i]);
+  }
+  return g_string_free(text, FALSE);
+}
+
+gboolean proxenos_config_reorder(const gchar *path, const gchar *const *order,
+                                 gsize count, GError **error) {
+  gchar *contents = NULL;
+  if (!g_file_get_contents(path, &contents, NULL, error))
+    return FALSE;
+
+  gsize length = strlen(contents);
+  gboolean trailing_newline = length > 0 && contents[length - 1] == '\n';
+  gchar **lines = g_strsplit(contents, "\n", -1);
+  g_free(contents);
+
+  /* Splitting a file that ends in a newline leaves an empty last field.  It is
+     not a line, and counting it would add one on every save. */
+  guint line_count = g_strv_length(lines);
+  if (trailing_newline && line_count > 0)
+    line_count--;
+
+  GArray *starts = g_array_new(FALSE, FALSE, sizeof(guint));
+  GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
+  for (guint i = 0; i < line_count; i++) {
+    gchar *name = config_group_header_name(lines[i]);
+    if (!name)
+      continue;
+
+    /* Walk back over the comment lines directly above the header.  A blank
+       line or a key stops the walk, and so does the header of the block
+       before, which is not a comment. */
+    guint start = i;
+    while (start > 0 && config_line_is_comment(lines[start - 1]))
+      start--;
+
+    g_array_append_val(starts, start);
+    g_ptr_array_add(names, name);
+  }
+
+  gboolean written = TRUE;
+  if (starts->len == 0) {
+    /* No groups: there is no order to change. */
+    g_ptr_array_unref(names);
+    g_array_unref(starts);
+    g_strfreev(lines);
+    return TRUE;
+  }
+
+  GArray *blocks = g_array_new(FALSE, TRUE, sizeof(ConfigBlock));
+  for (guint b = 0; b < starts->len; b++) {
+    guint from = g_array_index(starts, guint, b);
+    guint to = b + 1 < starts->len ? g_array_index(starts, guint, b + 1) : line_count;
+    ConfigBlock block = { g_strdup(g_ptr_array_index(names, b)),
+                          config_join_lines(lines, from, to) };
+    g_array_append_val(blocks, block);
+  }
+  gchar *preamble = config_join_lines(lines, 0, g_array_index(starts, guint, 0));
+
+  /* The named order first, then whatever the caller did not mention, so a
+     group added to the file by hand since the window opened is kept rather
+     than dropped. */
+  GPtrArray *ordered = g_ptr_array_new();
+  gboolean *placed = g_new0(gboolean, blocks->len);
+  for (gsize i = 0; i < count; i++) {
+    for (guint b = 0; b < blocks->len; b++) {
+      ConfigBlock *block = &g_array_index(blocks, ConfigBlock, b);
+      if (!placed[b] && g_strcmp0(block->name, order[i]) == 0) {
+        placed[b] = TRUE;
+        g_ptr_array_add(ordered, block);
+        break;
+      }
+    }
+  }
+  for (guint b = 0; b < blocks->len; b++)
+    if (!placed[b])
+      g_ptr_array_add(ordered, &g_array_index(blocks, ConfigBlock, b));
+
+  gboolean changed = FALSE;
+  for (guint b = 0; b < blocks->len && !changed; b++)
+    changed = g_ptr_array_index(ordered, b) != &g_array_index(blocks, ConfigBlock, b);
+
+  if (changed) {
+    GString *out = g_string_new(NULL);
+    if (g_array_index(starts, guint, 0) > 0) {
+      g_string_append(out, preamble);
+      g_string_append_c(out, '\n');
+    }
+    for (guint b = 0; b < ordered->len; b++) {
+      /* Blocks are separated by a blank line even when the file did not have
+         one.  Attachment is decided by the blank line above a comment run, so
+         without this a run trailing one block would end up touching the next
+         block's header after a move and be read as belonging to it: comments
+         would migrate from service to service on repeated reorders.  With it,
+         reordering and reordering back returns the file it started from. */
+      if (out->len > 0 && !g_str_has_suffix(out->str, "\n\n"))
+        g_string_append_c(out, '\n');
+      g_string_append(out, ((ConfigBlock *)g_ptr_array_index(ordered, b))->text);
+      g_string_append_c(out, '\n');
+    }
+    /* A block that ended in a blank line supplies the separator before the
+       next one, and leaves a blank line at the end of the file when it is
+       last.  Trimming here is what keeps a move followed by the reverse move
+       from changing the file at all. */
+    while (out->len > 1 && g_str_has_suffix(out->str, "\n\n"))
+      g_string_truncate(out, out->len - 1);
+
+    /* The newline after the last block belongs there only if the file had one;
+       g_file_set_contents writes through a temporary file and renames, so a
+       save that fails leaves the old file untouched. */
+    if (!trailing_newline && out->len > 0)
+      g_string_truncate(out, out->len - 1);
+
+    written = g_file_set_contents(path, out->str, (gssize)out->len, error);
+    g_string_free(out, TRUE);
+  }
+
+  for (guint b = 0; b < blocks->len; b++) {
+    ConfigBlock *block = &g_array_index(blocks, ConfigBlock, b);
+    g_free(block->name);
+    g_free(block->text);
+  }
+  g_free(placed);
+  g_ptr_array_free(ordered, TRUE);
+  g_array_unref(blocks);
+  g_free(preamble);
+  g_ptr_array_unref(names);
+  g_array_unref(starts);
+  g_strfreev(lines);
+  return written;
+}
+
+/* ---- reading the end of a log ------------------------------------------ */
+
+gchar *proxenos_tail_file(const gchar *path, guint lines, gsize max_bytes, GError **error) {
+  FILE *file = g_fopen(path, "rb");
+  if (!file) {
+    g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                "%s: %s", path, g_strerror(errno));
+    return NULL;
+  }
+
+  if (fseek(file, 0, SEEK_END) != 0) {
+    g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                "%s: %s", path, g_strerror(errno));
+    fclose(file);
+    return NULL;
+  }
+
+  glong size = ftell(file);
+  if (size < 0) {
+    g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                "%s: %s", path, g_strerror(errno));
+    fclose(file);
+    return NULL;
+  }
+  if (size == 0) {
+    fclose(file);
+    return g_strdup("");
+  }
+
+  /* Only the tail is read.  A log is appended to, so what matters is always at
+     the end, and the cap is what keeps a huge file from being pulled into
+     memory to show twenty lines of it. */
+  gboolean truncated = (gsize)size > max_bytes;
+  gsize span = truncated ? max_bytes : (gsize)size;
+  if (fseek(file, size - (glong)span, SEEK_SET) != 0) {
+    g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                "%s: %s", path, g_strerror(errno));
+    fclose(file);
+    return NULL;
+  }
+
+  gchar *buffer = g_malloc(span + 1);
+  gsize read = fread(buffer, 1, span, file);
+  fclose(file);
+  buffer[read] = '\0';
+
+  /* Starting mid-file almost certainly starts mid-line, and half a line
+     presented as a whole one is a small lie about what the log says. */
+  gchar *start = buffer;
+  if (truncated) {
+    gchar *newline = strchr(buffer, '\n');
+    start = newline ? newline + 1 : buffer + read;
+  }
+
+  /* Walk back from the end over the requested number of line breaks.  The
+     trailing newline that ends the last line is not a line on its own. */
+  gsize length = read - (gsize)(start - buffer);
+  gchar *from = start + length;
+  if (length > 0 && from[-1] == '\n')
+    from--;
+  guint seen = 0;
+  while (from > start) {
+    if (from[-1] == '\n' && ++seen == lines)
+      break;
+    from--;
+  }
+
+  gchar *tail = g_strndup(from, (gsize)(start + length - from));
+  g_free(buffer);
+  return tail;
+}
