@@ -53,8 +53,10 @@ typedef struct {
   GtkWidget *window;
   GtkWidget *list;
   GtkWidget *message;
-  GtkWidget *router_button;
+  GtkWidget *router_toggle;
+  gulong router_toggle_handler;
   GtkWidget *router_state;
+  GtkWidget *router_repair;
   GtkStatusIcon *tray;
   gchar *config_path;
   GPtrArray *rows;
@@ -154,24 +156,33 @@ static LocalNamesState local_names_state(App *app, gboolean thorough) {
 
 typedef struct {
   const gchar *state;
-  const gchar *button;
   const gchar *tooltip;
 } LocalNamesText;
 
+/* The switch answers the same question as a service row's switch, whether the
+   router is running; the line under it says only what the switch cannot. */
 static void show_local_names_state(App *app, LocalNamesState state) {
   static const LocalNamesText wording[] = {
-    [LOCAL_NAMES_OFF] = { "Local names · off", "Turn on",
-                          "Proxenos Router is not running." },
-    [LOCAL_NAMES_ROUTER_ONLY] = { "Local names · needs repair", "Repair",
+    [LOCAL_NAMES_OFF] = { "Off", "Proxenos Router is not running." },
+    [LOCAL_NAMES_ROUTER_ONLY] = { "DNS route incomplete",
                           "Proxenos Router is running, but the persistent system DNS route is incomplete." },
-    [LOCAL_NAMES_READY] = { "Local names · active", "Turn off",
-                          "Router and persistent DNS integration are active." },
+    [LOCAL_NAMES_READY] = { "Active", "Router and persistent DNS integration are active." },
   };
 
   const LocalNamesText *text = &wording[state];
   gtk_label_set_text(GTK_LABEL(app->router_state), text->state);
-  gtk_button_set_label(GTK_BUTTON(app->router_button), text->button);
   gtk_widget_set_tooltip_text(app->router_state, text->tooltip);
+  gtk_widget_set_visible(app->router_repair, state == LOCAL_NAMES_ROUTER_ONLY);
+  gtk_widget_set_sensitive(app->router_toggle, TRUE);
+
+  /* As with the service rows, moving the switch in code must not read as the
+     user asking for the router to start or stop. */
+  gboolean running = state != LOCAL_NAMES_OFF;
+  if (gtk_switch_get_active(GTK_SWITCH(app->router_toggle)) != running) {
+    g_signal_handler_block(app->router_toggle, app->router_toggle_handler);
+    gtk_switch_set_active(GTK_SWITCH(app->router_toggle), running);
+    g_signal_handler_unblock(app->router_toggle, app->router_toggle_handler);
+  }
 }
 
 /* Runs between fork and exec, where only async-signal-safe calls are allowed.
@@ -306,7 +317,7 @@ static gboolean refresh_everything(gpointer data) {
     refresh_row(listeners, g_ptr_array_index(app->rows, i));
   proxenos_listeners_free(listeners);
 
-  /* While pkexec is asking for a password the button shows its own text. */
+  /* While pkexec is asking for a password the switch shows its own text. */
   if (!app->router_command_running) {
     gboolean thorough = app->refresh_count % THOROUGH_ROUTER_CHECK_EVERY == 0;
     show_local_names_state(app, local_names_state(app, thorough));
@@ -359,15 +370,14 @@ static void on_router_command_finished(GObject *source, GAsyncResult *result, gp
 /* Binding ports 53 and 80 needs privilege, so the router is launched through
    pkexec.  The password dialog belongs to the desktop's Polkit agent;
    Proxenos never sees what is typed into it. */
-static void on_router_button_clicked(GtkButton *button, gpointer data) {
-  App *app = data;
-  LocalNamesState state = local_names_state(app, TRUE);
-  gboolean turning_on = state != LOCAL_NAMES_READY;
-  proxenos_debug_log("local names button clicked while state was %d", state);
+static void run_router_command(App *app, gboolean turning_on) {
+  proxenos_debug_log("local names %s requested while state was %d",
+                     turning_on ? "start" : "stop", local_names_state(app, TRUE));
 
   gchar *router = g_find_program_in_path("proxenos-router");
   if (!router) {
     gtk_label_set_text(GTK_LABEL(app->message), "Cannot find proxenos-router on PATH.");
+    show_local_names_state(app, local_names_state(app, TRUE));
     return;
   }
 
@@ -399,11 +409,16 @@ static void on_router_button_clicked(GtkButton *button, gpointer data) {
     gtk_label_set_text(GTK_LABEL(app->message), message);
     g_free(message);
     g_error_free(error);
+    show_local_names_state(app, local_names_state(app, TRUE));
   } else {
+    /* The switch is held where the user put it and greyed out until the
+       command returns; then it moves to wherever the router actually is,
+       which is back again if the permission request was cancelled. */
     app->router_command_running = TRUE;
+    gtk_widget_set_sensitive(app->router_toggle, FALSE);
+    gtk_widget_hide(app->router_repair);
     gtk_label_set_text(GTK_LABEL(app->router_state),
-                       turning_on ? "Waiting for system permission…" : "Stopping local names…");
-    gtk_button_set_label(GTK_BUTTON(button), turning_on ? "Authorizing…" : "Stopping…");
+                       turning_on ? "Waiting for permission…" : "Stopping…");
     g_subprocess_communicate_utf8_async(process, NULL, NULL, on_router_command_finished, app);
     g_object_unref(process);
   }
@@ -411,6 +426,18 @@ static void on_router_button_clicked(GtkButton *button, gpointer data) {
   g_ptr_array_free(argv, TRUE);
   g_free(debug_path);
   g_free(router);
+}
+
+static gboolean on_router_switch_flipped(GtkSwitch *toggle, gboolean active, gpointer data) {
+  (void)toggle;
+  run_router_command(data, active);
+  return FALSE;
+}
+
+/* Running the setup again over a running router puts the DNS route back. */
+static void on_router_repair_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  run_router_command(data, TRUE);
 }
 
 static void free_row(gpointer data) {
@@ -969,7 +996,6 @@ static void apply_theme_styles(void) {
       ".proxenos-service { margin: 4px 10px; border-radius: 8px; }"
       ".proxenos-service-name { font-weight: bold; }"
       ".proxenos-state { opacity: 0.72; }"
-      ".proxenos-routing-button { padding: 2px 6px; }"
       ".proxenos-service.proxenos-dragging { background-color: @theme_bg_color; }"
       ".proxenos-dot { opacity: 0.45; }"
       ".proxenos-endpoint { opacity: 0.85; }"
@@ -1005,21 +1031,42 @@ static GtkWidget *build_brand_icon(void) {
   return icon;
 }
 
+/* Laid out like a service row, name and state on the left and the switch on
+   the right, because it is switched on and off the same way. */
 static GtkWidget *build_local_names_control(App *app) {
-  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
   gtk_widget_set_halign(box, GTK_ALIGN_END);
+  gtk_widget_set_valign(box, GTK_ALIGN_CENTER);
 
+  GtkWidget *text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+  GtkWidget *title = gtk_label_new("Local names");
+  gtk_widget_set_halign(title, GTK_ALIGN_END);
+  gtk_style_context_add_class(gtk_widget_get_style_context(title), "proxenos-service-name");
+
+  GtkWidget *state_line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_set_halign(state_line, GTK_ALIGN_END);
   app->router_state = gtk_label_new("");
-  gtk_widget_set_halign(app->router_state, GTK_ALIGN_END);
+  gtk_style_context_add_class(gtk_widget_get_style_context(app->router_state), "proxenos-state");
 
-  app->router_button = gtk_button_new_with_label("");
-  gtk_button_set_relief(GTK_BUTTON(app->router_button), GTK_RELIEF_NONE);
-  gtk_style_context_add_class(gtk_widget_get_style_context(app->router_button), "flat");
-  gtk_style_context_add_class(gtk_widget_get_style_context(app->router_button), "proxenos-routing-button");
-  g_signal_connect(app->router_button, "clicked", G_CALLBACK(on_router_button_clicked), app);
+  app->router_repair = gtk_button_new_with_label("Repair");
+  gtk_button_set_relief(GTK_BUTTON(app->router_repair), GTK_RELIEF_NONE);
+  gtk_style_context_add_class(gtk_widget_get_style_context(app->router_repair), "proxenos-copy");
+  gtk_widget_set_tooltip_text(app->router_repair, "Set up the system DNS route again");
+  gtk_widget_set_no_show_all(app->router_repair, TRUE);
+  g_signal_connect(app->router_repair, "clicked", G_CALLBACK(on_router_repair_clicked), app);
 
-  gtk_box_pack_start(GTK_BOX(box), app->router_state, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(box), app->router_button, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(state_line), app->router_state, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(state_line), app->router_repair, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(text), title, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(text), state_line, FALSE, FALSE, 0);
+
+  app->router_toggle = gtk_switch_new();
+  gtk_widget_set_valign(app->router_toggle, GTK_ALIGN_CENTER);
+  app->router_toggle_handler = g_signal_connect(app->router_toggle, "state-set",
+                                                G_CALLBACK(on_router_switch_flipped), app);
+
+  gtk_box_pack_start(GTK_BOX(box), text, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box), app->router_toggle, FALSE, FALSE, 0);
   return box;
 }
 

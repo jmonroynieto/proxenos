@@ -168,10 +168,11 @@ older `proxenos-cli` than the window expects will silently refuse the
 `ready` verb and configured checks won't run.
 
 The window's header shows the build's Git revision, with a `-dirty` suffix
-if the working tree had changes when it was built. **Local names** reports
-active only once both the router and the persistent DNS integration are in
-place; a router running with incomplete DNS setup is reported separately,
-with a repair action offered.
+if the working tree had changes when it was built. **Local names** has a
+switch like a service's: it is on while the router runs. The line under it
+says "Active" only once the persistent DNS integration is in place as well; a
+router running without it reads "DNS route incomplete", with a **Repair**
+link that sets the route up again without restarting the router.
 
 Only one Proxenos runs per session. Launching it again, from the menu or a
 terminal, brings the existing window forward instead of starting a second
@@ -245,7 +246,7 @@ also works, and Forgejo can use `http://forgejo.proxenos` while staying
 bound to port 3000 — neither service needs to bind `0.0.0.0`.
 
 The router binds loopback ports 53 (DNS) and 80 (HTTP), so it needs elevated
-permission — clicking the button opens a Polkit prompt, points
+permission — turning on the **Local names** switch opens a Polkit prompt, points
 NetworkManager at the already-running `systemd-resolved`, adds the
 `~proxenos` routing domain for `127.0.0.1`, and starts the router. Proxenos
 never receives or stores the password itself. It saves the prior
@@ -253,7 +254,7 @@ never receives or stores the password itself. It saves the prior
 file to the standard `systemd-resolved` stub.
 
 The password dialog belongs to XFCE's Polkit agent, not to Proxenos. If
-clicking the button produces no prompt, check that an agent is running with
+turning the switch on produces no prompt, check that an agent is running with
 `pgrep -af 'polkit.*agent|xfce-polkit'`, and install one (`polkit-gnome` is
 a common Arch/Manjaro choice) if that comes back empty. `proxenos-manjaro-routing`
 runs the same setup from a terminal, without the window.

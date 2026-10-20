@@ -900,6 +900,17 @@ int main(int argc, char **argv) {
   if (setup_manjaro && !setup_manjaro_resolver())
     goto finished;
 
+  /* Setting up again over a running router is how the window repairs the
+     DNS route; the router already holds the ports, so the work ends here.
+     Only the pid file is consulted: a /proc scan would find this process. */
+  pid_t running = 0;
+  if (setup_manjaro && proxenos_pid_from_file(pid_file, &running)) {
+    proxenos_debug_log("DNS route set up; router already running as pid %d", (int)running);
+    g_print("Proxenos Router is already running (pid %d).\n", (int)running);
+    result = 0;
+    goto finished;
+  }
+
   Router router = { .dns_fd = -1, .http_fd = -1 };
   router.routes = load_routes(config_path, &error);
   if (!router.routes) {
