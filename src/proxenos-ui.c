@@ -49,6 +49,7 @@ typedef struct {
 typedef enum { LOCAL_NAMES_OFF, LOCAL_NAMES_ROUTER_ONLY, LOCAL_NAMES_READY } LocalNamesState;
 
 typedef struct {
+  GtkApplication *application;
   GtkWidget *window;
   GtkWidget *list;
   GtkWidget *message;
@@ -59,6 +60,7 @@ typedef struct {
   GPtrArray *rows;
   guint refresh_count;
   gboolean router_command_running;
+  pid_t router_pid;           /* the router last found, by pid file or by scan */
 } App;
 
 static void stop_services_and_quit(GtkMenuItem *item, gpointer data);
@@ -121,8 +123,30 @@ static gboolean resolver_is_configured(void) {
       && g_strcmp0(target, "/run/systemd/resolve/stub-resolv.conf") == 0;
 }
 
-static LocalNamesState local_names_state(gboolean thorough) {
-  gboolean running = thorough ? proxenos_router_is_running() : proxenos_router_pid_from_file(NULL);
+/* Whether the process found earlier is still a router.  This is what keeps a
+   router with no pid file, which only the occasional /proc scan can find,
+   from being reported as off on every refresh in between scans. */
+static gboolean router_still_running(pid_t pid) {
+  if (pid < 2)
+    return FALSE;
+
+  gchar *path = g_strdup_printf("/proc/%d/comm", (int)pid);
+  gchar *name = NULL;
+  gboolean running = g_file_get_contents(path, &name, NULL, NULL)
+      && g_strcmp0(g_strstrip(name), "proxenos-router") == 0;
+  g_free(name);
+  g_free(path);
+  return running;
+}
+
+static LocalNamesState local_names_state(App *app, gboolean thorough) {
+  pid_t pid = 0;
+  gboolean running;
+  if (thorough)
+    running = proxenos_router_pid(&pid);
+  else if (!(running = proxenos_router_pid_from_file(&pid)))
+    running = router_still_running(pid = app->router_pid);
+  app->router_pid = running ? pid : 0;
   if (!running)
     return LOCAL_NAMES_OFF;
   return resolver_is_configured() ? LOCAL_NAMES_READY : LOCAL_NAMES_ROUTER_ONLY;
@@ -285,7 +309,7 @@ static gboolean refresh_everything(gpointer data) {
   /* While pkexec is asking for a password the button shows its own text. */
   if (!app->router_command_running) {
     gboolean thorough = app->refresh_count % THOROUGH_ROUTER_CHECK_EVERY == 0;
-    show_local_names_state(app, local_names_state(thorough));
+    show_local_names_state(app, local_names_state(app, thorough));
   }
   app->refresh_count++;
   return G_SOURCE_CONTINUE;
@@ -327,7 +351,7 @@ static void on_router_command_finished(GObject *source, GAsyncResult *result, gp
     gtk_widget_set_tooltip_text(app->message, NULL);
   }
 
-  show_local_names_state(app, local_names_state(TRUE));
+  show_local_names_state(app, local_names_state(app, TRUE));
   g_free(output);
   g_free(diagnostic);
 }
@@ -337,7 +361,7 @@ static void on_router_command_finished(GObject *source, GAsyncResult *result, gp
    Proxenos never sees what is typed into it. */
 static void on_router_button_clicked(GtkButton *button, gpointer data) {
   App *app = data;
-  LocalNamesState state = local_names_state(TRUE);
+  LocalNamesState state = local_names_state(app, TRUE);
   gboolean turning_on = state != LOCAL_NAMES_READY;
   proxenos_debug_log("local names button clicked while state was %d", state);
 
@@ -352,6 +376,11 @@ static void on_router_button_clicked(GtkButton *button, gpointer data) {
   g_ptr_array_add(argv, "pkexec");
   g_ptr_array_add(argv, router);
   g_ptr_array_add(argv, turning_on ? "--setup-manjaro" : "--stop");
+  /* pkexec returns, and this window hears the outcome, only once the router
+     command has exited; --background makes it exit as soon as the router is
+     listening instead of when it is turned off again. */
+  if (turning_on)
+    g_ptr_array_add(argv, "--background");
   g_ptr_array_add(argv, "--debug-log");
   g_ptr_array_add(argv, debug_path);
   if (turning_on) {
@@ -850,7 +879,7 @@ static void stop_services_and_quit(GtkMenuItem *item, gpointer data) {
     }
   }
 
-  gtk_main_quit();
+  g_application_quit(G_APPLICATION(app->application));
 }
 
 /* A termination request is a deliberate exit, so it means what the tray menu's
@@ -1066,29 +1095,51 @@ static GtkWidget *build_window(App *app) {
   return window;
 }
 
-int main(int argc, char **argv) {
-  gtk_init(&argc, &argv);
-  proxenos_debug_log_configure("ui", NULL);
+/* Runs in the first Proxenos only.  GApplication registers the id on the
+   session bus, and a later launch finds it taken and asks this one to activate
+   instead of starting a second set of rows, a second tray icon and a second
+   refresh loop watching the same services. */
+static void on_startup(GApplication *application, gpointer data) {
+  App *app = data;
+
   apply_theme_styles();
+  build_window(app);
+  gtk_window_set_application(GTK_WINDOW(app->window), GTK_APPLICATION(application));
+  app->tray = build_tray(app);
+  show_local_names_state(app, local_names_state(app, TRUE));
+  load_services(app);
+  g_timeout_add_seconds(REFRESH_INTERVAL_SECONDS, refresh_everything, app);
+  g_unix_signal_add(SIGTERM, on_termination_signal, app);
+  g_unix_signal_add(SIGINT, on_termination_signal, app);
+  g_unix_signal_add(SIGHUP, on_termination_signal, app);
+
+  /* A window hidden in the tray no longer keeps the application alive on its
+     own, so the application is held until a deliberate quit. */
+  g_application_hold(application);
+}
+
+/* Every launch, the first included, ends here in the first Proxenos; for a
+   later one this is the whole of what it does. */
+static void on_activate(GApplication *application, gpointer data) {
+  (void)application;
+  show_window(NULL, data);
+}
+
+int main(int argc, char **argv) {
+  proxenos_debug_log_configure("ui", NULL);
 
   App app = {0};
   app.config_path = proxenos_config_path();
   app.rows = g_ptr_array_new_with_free_func(free_row);
+  app.application = gtk_application_new("org.proxenos.Proxenos", G_APPLICATION_DEFAULT_FLAGS);
+  g_signal_connect(app.application, "startup", G_CALLBACK(on_startup), &app);
+  g_signal_connect(app.application, "activate", G_CALLBACK(on_activate), &app);
 
-  GtkWidget *window = build_window(&app);
-  app.tray = build_tray(&app);
-  show_local_names_state(&app, local_names_state(TRUE));
-  load_services(&app);
-  g_timeout_add_seconds(REFRESH_INTERVAL_SECONDS, refresh_everything, &app);
-  g_unix_signal_add(SIGTERM, on_termination_signal, &app);
-  g_unix_signal_add(SIGINT, on_termination_signal, &app);
-  g_unix_signal_add(SIGHUP, on_termination_signal, &app);
-
-  gtk_widget_show_all(window);
-  gtk_main();
+  int status = g_application_run(G_APPLICATION(app.application), argc, argv);
 
   g_clear_object(&app.tray);
+  g_object_unref(app.application);
   g_ptr_array_unref(app.rows);
   g_free(app.config_path);
-  return 0;
+  return status;
 }

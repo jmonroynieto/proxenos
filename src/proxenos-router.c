@@ -31,6 +31,8 @@
 #define POLL_INTERVAL_MS 1000
 #define DNS_MESSAGE_MAX 512
 #define DNS_ANSWER_TTL_SECONDS 30
+/* How long --stop waits for the router to exit, in tenths of a second. */
+#define STOP_WAIT_TENTHS 50
 
 typedef struct {
   gchar *hostname;
@@ -720,7 +722,53 @@ static int stop_existing_router(const gchar *pid_file) {
 
   proxenos_debug_log("stop requested for pid %d", (int)pid);
   g_print("Stopping Proxenos Router (pid %d).\n", (int)pid);
+
+  /* The window checks the router again as soon as this returns, so returning
+     before the router has gone would show it as still running. */
+  for (int waited = 0; waited < STOP_WAIT_TENTHS && kill(pid, 0) == 0; waited++)
+    g_usleep(G_USEC_PER_SEC / 10);
   return 0;
+}
+
+/* The window starts the router through pkexec and waits for pkexec to finish
+   before reporting the outcome.  A router that kept running in the foreground
+   would keep pkexec, and the window, waiting for as long as names are on, so
+   once the sockets are bound it hands itself to a child and the parent exits.
+   Everything that can fail on the way up has failed by then, and its message
+   has reached the window on stderr. */
+static gboolean continue_in_background(const gchar *pid_file, GError **error) {
+  /* The parent leaves with _exit, which does not flush, so anything already
+     printed is sent now rather than lost or printed twice. */
+  fflush(stdout);
+  fflush(stderr);
+  pid_t child = fork();
+  if (child < 0) {
+    g_set_error(error, G_FILE_ERROR, g_file_error_from_errno(errno),
+                "cannot fork: %s", g_strerror(errno));
+    return FALSE;
+  }
+
+  if (child > 0) {
+    if (!proxenos_write_pid_file(pid_file, child, error)) {
+      kill(child, SIGTERM);
+      return FALSE;
+    }
+    proxenos_debug_log("router continuing in the background as pid %d", (int)child);
+    _exit(0);
+  }
+
+  /* The child lets go of the terminal and the pipes the window is reading,
+     which is what lets the window see the command as finished. */
+  setsid();
+  int null = open("/dev/null", O_RDWR);
+  if (null >= 0) {
+    dup2(null, STDIN_FILENO);
+    dup2(null, STDOUT_FILENO);
+    dup2(null, STDERR_FILENO);
+    if (null > STDERR_FILENO)
+      close(null);
+  }
+  return TRUE;
 }
 
 static gboolean run_command(const gchar *const *argv) {
@@ -807,6 +855,7 @@ int main(int argc, char **argv) {
   gint http_port = 80;
   gboolean stop = FALSE;
   gboolean setup_manjaro = FALSE;
+  gboolean background = FALSE;
 
   GOptionEntry entries[] = {
     { "config", 'c', 0, G_OPTION_ARG_FILENAME, &config_path, "Service configuration file", "PATH" },
@@ -816,6 +865,7 @@ int main(int argc, char **argv) {
     { "pid-file", 0, 0, G_OPTION_ARG_FILENAME, &pid_file, "Where to record the router's pid", "PATH" },
     { "stop", 0, 0, G_OPTION_ARG_NONE, &stop, "Stop the running router", NULL },
     { "setup-manjaro", 0, 0, G_OPTION_ARG_NONE, &setup_manjaro, "Configure systemd-resolved for .proxenos", NULL },
+    { "background", 0, 0, G_OPTION_ARG_NONE, &background, "Return once the router is listening", NULL },
     { NULL },
   };
 
@@ -871,15 +921,16 @@ int main(int argc, char **argv) {
   signal(SIGTERM, request_stop);
   signal(SIGPIPE, SIG_IGN);
 
-  if (!proxenos_write_pid_file(pid_file, getpid(), &error)) {
-    g_printerr("Cannot write %s: %s\n", pid_file, error->message);
-    g_error_free(error);
-    goto cleanup;
-  }
-
   proxenos_debug_log("router started as pid %d with %u route(s)", (int)getpid(), router.routes->len);
   g_print("Routing %u service(s): DNS 127.0.0.1:%d, HTTP 127.0.0.1:%d\n",
           router.routes->len, dns_port, http_port);
+
+  if (background ? !continue_in_background(pid_file, &error)
+                 : !proxenos_write_pid_file(pid_file, getpid(), &error)) {
+    g_printerr("Cannot start Proxenos Router: %s\n", error->message);
+    g_error_free(error);
+    goto cleanup;
+  }
 
   run_router(&router);
 

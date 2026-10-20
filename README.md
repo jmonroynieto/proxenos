@@ -173,6 +173,10 @@ active only once both the router and the persistent DNS integration are in
 place; a router running with incomplete DNS setup is reported separately,
 with a repair action offered.
 
+Only one Proxenos runs per session. Launching it again, from the menu or a
+terminal, brings the existing window forward instead of starting a second
+copy with its own tray icon.
+
 Closing the window doesn't quit it — it stays in XFCE's notification area
 (or, with none available, closing performs the same shutdown described
 next). Its tray menu offers **Stop services and quit**, which stops every
@@ -274,6 +278,12 @@ record type the zone doesn't hold — the AAAA half of an ordinary lookup, say
 — is answered "no such record" rather than "no such name," since the latter
 would contradict the A answer sent alongside it. Names outside the zone are
 refused outright: the router isn't a general resolver.
+
+The window starts the router with `--background`, which returns as soon as
+the router is listening and leaves it running in a session of its own; the
+window reports the outcome when that command returns. Without the flag, as
+`proxenos-manjaro-routing` runs it, the router stays in the foreground until
+it is stopped. `--stop` waits up to five seconds for the router to exit.
 
 `--dns-port`, `--http-port`, and `--pid-file` let a second router run
 alongside the installed one on unprivileged ports, which is how the tests
