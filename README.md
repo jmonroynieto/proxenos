@@ -84,9 +84,16 @@ command check earns its keep.
 The order of `[group]` blocks in the file is the order the window and the
 panel menu list services in. Dragging a row in the window moves the group in
 the file, so the file and the two menus never disagree, and the order
-survives a restart. Rows are dragged by their body — the switch and the
-`Logs` button keep their own clicks, so there's no way to start a drag by
-reaching for a control.
+survives a restart. Rows are dragged by their body; the switch keeps its own
+clicks, so reaching for it never starts a drag.
+
+`icon` gives a service a picture at the start of its row. It is either the
+name of an icon in your current theme (`icon=utilities-terminal`) or a file:
+an absolute path, a path under `~/`, or a path relative to `services.conf`
+(`icon=icons/forgejo.svg`). Any format GDK can load works, SVG included. A
+service without an icon, or whose icon can't be found, gets the same empty
+space, so every row's name starts in the same column; a missing file is
+noted in the diagnostic log.
 
 That move edits the file's text directly rather than reparsing it and
 writing it back, so comments, spacing, and the exact wording of every line
@@ -147,12 +154,13 @@ startup, in which case the exit status it left is reported alongside.
 ## The window and panel
 
 Launch the window with `proxenos`. Each row shows the service's name and
-current state on one line, with its declared endpoint underneath; the
-controls are a `Logs` button and an on/off switch. The switch reflects
+current state on one line, with its declared endpoint underneath, its icon
+to the left of both, and an on/off switch on the right. The switch reflects
 whether the process exists; the state text next to the name reflects
 whether it can answer.
 
-`Logs` opens a small viewer rather than a notice. It lists the captured
+Clicking a row anywhere but its switch, or pressing Enter on it, opens a
+small log viewer. It lists the captured
 output location and any `logs=` paths, each of which copies itself to the
 clipboard on click, followed by the last 300 lines of captured output
 (`Refresh` re-reads without closing the window). Reading starts at most 256

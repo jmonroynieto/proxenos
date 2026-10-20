@@ -463,9 +463,8 @@ typedef struct {
   GtkWidget *status;   /* one line reporting what the last click did */
 } LogWindow;
 
-static void free_log_window(gpointer data, GClosure *closure) {
+static void free_log_window(gpointer data) {
   LogWindow *log = data;
-  (void)closure;
   g_free(log->captured);
   g_free(log);
 }
@@ -541,14 +540,20 @@ static void show_log_tail(LogWindow *log) {
   gtk_text_buffer_delete_mark(buffer, mark);
 }
 
-static void on_logs_clicked(GtkButton *button, gpointer data) {
-  LogWindow *log = data;
-  gchar **declared = g_object_get_data(G_OBJECT(button), "proxenos-declared-logs");
-  const gchar *name = g_object_get_data(G_OBJECT(button), "proxenos-service");
+/* Clicking a row, anywhere but its switch, opens that service's logs.  The
+   switch takes its own clicks, so turning a service on or off never opens
+   the viewer as well. */
+static void on_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer data) {
+  LogWindow *log = g_object_get_data(G_OBJECT(row), "proxenos-log");
+  gchar **declared = g_object_get_data(G_OBJECT(row), "proxenos-declared-logs");
+  const gchar *name = g_object_get_data(G_OBJECT(row), "proxenos-service");
+  (void)data;
+  if (!log)
+    return;
 
   gchar *title = g_strdup_printf("%s · logs", name);
   GtkWidget *dialog = gtk_dialog_new_with_buttons(
-      title, GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(button))),
+      title, GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(list))),
       GTK_DIALOG_DESTROY_WITH_PARENT, "_Refresh", 1, "_Close", GTK_RESPONSE_CLOSE, NULL);
   g_free(title);
   gtk_window_set_default_size(GTK_WINDOW(dialog), 780, 520);
@@ -754,6 +759,78 @@ static void on_list_drag_data_received(GtkWidget *list, GdkDragContext *context,
   gtk_drag_finish(context, TRUE, FALSE, time);
 }
 
+/* ---- service icons ------------------------------------------------------
+
+   `icon=` names either an icon from the current theme or a file (absolute,
+   under ~, or relative to the config file).  The icon spans the row's two lines
+   of text; a service without one, or whose icon cannot be found, keeps the
+   same empty square, so the names of every row still start in one column. */
+
+#define SERVICE_ICON_SIZE 36
+
+static gchar *icon_file_path(const App *app, const gchar *value) {
+  if (value[0] == '~' && (value[1] == '/' || value[1] == '\0'))
+    return g_build_filename(g_get_home_dir(), value + 1, NULL);
+  if (g_path_is_absolute(value))
+    return g_strdup(value);
+
+  gchar *directory = g_path_get_dirname(app->config_path);
+  gchar *path = g_build_filename(directory, value, NULL);
+  g_free(directory);
+  return path;
+}
+
+/* A file is loaded at the screen's scale, so it stays sharp on a HiDPI
+   display instead of being scaled up from 36 pixels. */
+static GtkWidget *service_icon_from_file(const gchar *path) {
+  GdkDisplay *display = gdk_display_get_default();
+  GdkMonitor *monitor = display ? gdk_display_get_primary_monitor(display) : NULL;
+  if (!monitor && display)
+    monitor = gdk_display_get_monitor(display, 0);
+  gint scale = monitor ? gdk_monitor_get_scale_factor(monitor) : 1;
+
+  GError *error = NULL;
+  GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale(
+      path, SERVICE_ICON_SIZE * scale, SERVICE_ICON_SIZE * scale, TRUE, &error);
+  if (!pixbuf) {
+    proxenos_debug_log("cannot load service icon %s: %s", path, error->message);
+    g_error_free(error);
+    return NULL;
+  }
+
+  cairo_surface_t *surface = gdk_cairo_surface_create_from_pixbuf(pixbuf, scale, NULL);
+  GtkWidget *image = gtk_image_new_from_surface(surface);
+  cairo_surface_destroy(surface);
+  g_object_unref(pixbuf);
+  return image;
+}
+
+static GtkWidget *build_service_icon(App *app, GKeyFile *config, const gchar *name) {
+  gchar *value = g_key_file_get_string(config, name, "icon", NULL);
+  GtkWidget *image = NULL;
+
+  if (value && *value) {
+    /* A bare word is a theme name first, since theme names may contain dots
+       ("org.gnome.Settings") and so look like file names. */
+    gboolean path_like = value[0] == '~' || strchr(value, '/');
+    if (!path_like && gtk_icon_theme_has_icon(gtk_icon_theme_get_default(), value)) {
+      image = gtk_image_new_from_icon_name(value, GTK_ICON_SIZE_DIALOG);
+      gtk_image_set_pixel_size(GTK_IMAGE(image), SERVICE_ICON_SIZE);
+    } else {
+      gchar *path = icon_file_path(app, value);
+      image = service_icon_from_file(path);
+      g_free(path);
+    }
+  }
+  g_free(value);
+
+  GtkWidget *slot = image ? image : gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_size_request(slot, SERVICE_ICON_SIZE, SERVICE_ICON_SIZE);
+  gtk_widget_set_valign(slot, GTK_ALIGN_CENTER);
+  gtk_widget_set_margin_end(slot, 2);
+  return slot;
+}
+
 static GtkWidget *build_service_row(App *app, GKeyFile *config, const gchar *name) {
   GtkWidget *row = gtk_list_box_row_new();
   gtk_style_context_add_class(gtk_widget_get_style_context(row), "proxenos-service");
@@ -793,14 +870,12 @@ static GtkWidget *build_service_row(App *app, GKeyFile *config, const gchar *nam
   g_free(endpoint);
   g_free(hostname);
 
-  GtkWidget *logs_button = gtk_button_new_with_label("Logs");
   LogWindow *log = g_new0(LogWindow, 1);
   log->captured = proxenos_state_path(name, "log");
-  g_object_set_data_full(G_OBJECT(logs_button), "proxenos-service", g_strdup(name), g_free);
-  g_object_set_data_full(G_OBJECT(logs_button), "proxenos-declared-logs",
+  g_object_set_data_full(G_OBJECT(row), "proxenos-log", log, free_log_window);
+  g_object_set_data_full(G_OBJECT(row), "proxenos-declared-logs",
                          declared_logs(config, name), (GDestroyNotify)g_strfreev);
-  g_signal_connect_data(logs_button, "clicked", G_CALLBACK(on_logs_clicked),
-                        log, free_log_window, 0);
+  gtk_widget_set_tooltip_text(row, "Click to see this service's logs");
 
   GtkWidget *toggle = gtk_switch_new();
   gtk_switch_set_active(GTK_SWITCH(toggle), running);
@@ -834,21 +909,22 @@ static GtkWidget *build_service_row(App *app, GKeyFile *config, const gchar *nam
   g_ptr_array_add(app->rows, service_row);
   show_row_state(service_row, initial);
 
-  /* Two stacked lines on the left, the controls on the right spanning both:
-     the endpoint then has the whole width the controls do not use, instead of
-     a column sized to the longest service name. */
+  /* The icon, two stacked lines, and the switch, with the icon and the switch
+     spanning both lines: the endpoint then has the whole width the switch does
+     not use, instead of a column sized to the longest service name. */
   gtk_box_pack_start(GTK_BOX(heading), title, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(heading), dot, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(heading), state, FALSE, FALSE, 0);
 
-  gtk_grid_attach(GTK_GRID(grid), heading, 0, 0, 1, 1);
-  gtk_grid_attach(GTK_GRID(grid), endpoint_label, 0, 1, 1, 1);
-  gtk_grid_attach(GTK_GRID(grid), logs_button, 1, 0, 1, 2);
+  gtk_widget_set_valign(toggle, GTK_ALIGN_CENTER);
+  gtk_grid_attach(GTK_GRID(grid), build_service_icon(app, config, name), 0, 0, 1, 2);
+  gtk_grid_attach(GTK_GRID(grid), heading, 1, 0, 1, 1);
+  gtk_grid_attach(GTK_GRID(grid), endpoint_label, 1, 1, 1, 1);
   gtk_grid_attach(GTK_GRID(grid), toggle, 2, 0, 1, 2);
   /* A list box row has no window to take button presses from, so the drag
      starts from an event box around the row's contents.  The box is invisible
-     and sits below the switch and the Logs button, which go on handling their
-     own clicks: the row is dragged by its body, not by its controls. */
+     and sits below the switch, which goes on handling its own clicks: the row
+     is dragged by its body, not by its control. */
   GtkWidget *handle = gtk_event_box_new();
   gtk_event_box_set_visible_window(GTK_EVENT_BOX(handle), FALSE);
   gtk_container_add(GTK_CONTAINER(handle), grid);
@@ -1109,7 +1185,8 @@ static GtkWidget *build_message_label(App *app) {
 static GtkWidget *build_service_list(App *app) {
   app->list = gtk_list_box_new();
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(app->list), GTK_SELECTION_NONE);
-  gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(app->list), FALSE);
+  gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(app->list), TRUE);
+  g_signal_connect(app->list, "row-activated", G_CALLBACK(on_row_activated), app);
 
   gtk_drag_dest_set(app->list, GTK_DEST_DEFAULT_ALL, service_row_targets,
                     G_N_ELEMENTS(service_row_targets), GDK_ACTION_MOVE);

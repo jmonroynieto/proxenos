@@ -28,6 +28,8 @@ working_directory=/path/to/ollama-flake
 environment=OLLAMA_VULKAN=1;OLLAMA_INTEL_GPU=1;
 port=11434
 hostname=ollama.proxenos
+# A theme icon name, or a file: absolute, under ~/, or relative to this file.
+icon=utilities-terminal
 stop_signal=TERM
 stop_timeout_seconds=10
 # Ollama binds 11434 only once its server is up, and it has no warm-up after
